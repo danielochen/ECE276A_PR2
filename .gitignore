@@ -2,5 +2,4 @@ data/
 
 *.npz
 *.pyc
-# virtual env
 .venv/
