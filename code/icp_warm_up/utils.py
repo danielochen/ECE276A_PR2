@@ -3,6 +3,8 @@ import scipy.io as sio
 import numpy as np
 import open3d as o3d
 
+HERE = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(HERE, "data")
 
 def read_canonical_model(model_name):
   '''
@@ -10,7 +12,8 @@ def read_canonical_model(model_name):
   model_name: str, 'drill' or 'liq_container'
   return: numpy array, (N, 3)
   '''
-  model_fname = os.path.join('./data', model_name, 'model.mat')
+  # model_fname = os.path.join('./data', model_name, 'model.mat')
+  model_fname = os.path.join(DATA_DIR, model_name, "model.mat")
   model = sio.loadmat(model_fname)
 
   cano_pc = model['Mdata'].T / 1000.0 # convert to meter
@@ -25,7 +28,8 @@ def load_pc(model_name, id):
   id: int, point cloud id
   return: numpy array, (N, 3)
   '''
-  pc_fname = os.path.join('./data', model_name, '%d.npy' % id)
+  # pc_fname = os.path.join('./data', model_name, '%d.npy' % id)
+  pc_fname = os.path.join(DATA_DIR, model_name, f"{id}.npy")
   pc = np.load(pc_fname)
 
   return pc
