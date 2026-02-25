@@ -2,12 +2,13 @@
 import numpy as np
 import matplotlib.pyplot as plt; plt.ion()
 import time
-import icp_warm_up.utils as U1
+from icp_warm_up.utils import read_canonical_model, load_pc, visualize_icp_result
 from scipy.spatial import cKDTree
 from load_data import load_dataset
 
 def tic():
   return time.time()
+
 def toc(tstart, name="Operation"):
   print('%s took: %s sec.\n' % (name,(time.time() - tstart)))
 
@@ -108,40 +109,29 @@ def lidar_scan_to_points(ranges, angles, range_min, range_max):
 
     return np.vstack((x, y))
 
-def plot_icp_alignment(P, Q, R, p, title="ICP alignment"):
-    plt.figure(figsize=(6,6))
-    plt.scatter(Q[0], Q[1], s=1, label="Q (target)", alpha=0.8)
-
-    plt.scatter(P[0], P[1], s=1, label="P (source)", alpha=0.3)
-
-    P_aligned = R @ P + p
-    plt.scatter(P_aligned[0], P_aligned[1], s=1, label="R@P+p (aligned)", alpha=0.8)
-
-    plt.axis("equal")
-    plt.grid(True)
-    plt.legend()
-    plt.title(title)
-    plt.xlabel("x (m)")
-    plt.ylabel("y (m)")
-    plt.show()
-
 def rotation2d(theta):
   # rotation matrix at angle theta
   R = np.array([[np.cos(theta), -np.sin(theta)],
                 [np.sin(theta),  np.cos(theta)]])
   return R
 
-def Rz(yaw):
+def rotation_yaw(yaw):
   # rotations about z axis
   R = np.array([[np.cos(yaw), -np.sin(yaw), 0],
                 [np.sin(yaw),  np.cos(yaw), 0],
                 [0,  0, 1]])
   return R
 
-def make_T(R, p):
+def make_T3(R, p):
   T = np.eye(4)
   T[:3, :3] = R
   T[:3, 3] = p.reshape(3,)
+  return T
+
+def make_T2(R, p):
+  T = np.eye(3)
+  T[:2, :2] = R
+  T[:2, 2] = p.reshape(2,)
   return T
 
 def test_map(dataset=20):
@@ -296,24 +286,24 @@ def encoder_IMU_odometry(dataset = 20, d_tick = 0.0022, plot = False):
     return t_start, t_end, encoder_counts_sync, encoder_stamps_sync, v, imu_angular_velocity_yaw, imu_stamps_yaw, x, y, encoder_theta, d_x, d_y, d_theta
 
 # Kabsch Algorithm from HW2
-def Kabsch(P, Q):
-  d, N = P.shape
+def Kabsch(Z, M):
+  d, N = Z.shape
 
   # mean of dataset
-  P_mean = P.mean(axis=1, keepdims=True)
-  Q_mean = Q.mean(axis=1, keepdims=True)
+  Z_mean = Z.mean(axis=1, keepdims=True)
+  M_mean = M.mean(axis=1, keepdims=True)
 
   # centroid cloud
-  P_delta = P - P_mean                                                          # δzi - z_mean
-  Q_delta = Q - Q_mean                                                          # δmi - m_mean
+  Z_delta = Z - Z_mean                                                          # δzi - z_mean
+  M_delta = M - M_mean                                                          # δmi - m_mean
 
   # want to find R and p so that Rz + p = m
   # same as solving for the R and p that minimizes the sum ||(Rz_i + p) − m_i||
   # minimize with setting gradient with respect to p
-  Q = P_delta @ Q_delta.T
+  Q_k = Z_delta @ M_delta.T
  
   # solve with Kabsch Algorithm, SVD: let Q = UΣV.T
-  U, Sigma, V_t = np.linalg.svd(Q)
+  U, Sigma, V_t = np.linalg.svd(Q_k)
 
   # print("\nU\n", U)
   # print("\nSigma\n", Sigma)
@@ -325,29 +315,30 @@ def Kabsch(P, Q):
     V_t[-1, :] *= -1
     R = V_t.T @ U.T
 
-  p = Q_mean - R @ P_mean                                                       # bias
+  p = M_mean - R @ Z_mean                                                       # bias
 
   return R, p
 
 # ICP
-def ICP(P, Q, R_init, p_init, iterations = 1000, tolerance = 1e-6):
-  dim1, N_P = P.shape                                                           # source cloud
-  dim2, N_Q = Q.shape                                                           # target cloud
+def ICP(Z, M, R_init, p_init, iterations = 1000, tolerance = 1e-6):
+  # t_T_t+1​ = M_T_Z, source to target or Z to M
+  dim1, N_Z = Z.shape                                                           # source cloud
+  dim2, N_M = M.shape                                                           # target cloud
 
   R = R_init                                                                    # set R, p to initial
   p = p_init
 
   mse_prev = np.inf                                                             # MSE init
-  kdtree = cKDTree(Q.T)                                                         # target cloud KD-tree
+  kdtree = cKDTree(M.T)                                                         # target cloud KD-tree
 
   for i in range(iterations):
-    P_correspond = R @ P + p                                                              # source transform                             
+    Z_correspond = R @ Z + p                                                    # source transform                             
 
     # nearest neighbours in 2 or 3D using KD tree
-    d, i_kd = kdtree.query(P_correspond.T)
-    Q_correspond = Q[:, i_kd]
+    d, i_kd = kdtree.query(Z_correspond.T)
+    M_correspond = M[:, i_kd]
 
-    d_R, d_p = Kabsch(P_correspond, Q_correspond)                               # iterate Kabsch step
+    d_R, d_p = Kabsch(Z_correspond, M_correspond)                               # iterate Kabsch step
 
     R = d_R @ R                                                                 # update transforms with R, p
     p = d_R @ p + d_p
@@ -361,36 +352,61 @@ def ICP(P, Q, R_init, p_init, iterations = 1000, tolerance = 1e-6):
 
 
 # 2A
-def warmup_icp(model_name, pc_id, yaw_steps=36, iters=50, tol=1e-6):
+def warmup_icp(model_name, pc_id, yaw_steps=36, iterations=1000, tolerance=1e-6):
+    # t_T_t+1​ = M_T_Z, source to target or Z to M
     # target = canonical model, source = measured pc
-    target = U1.read_canonical_model(model_name)
-    source = U1.load_pc(model_name, pc_id)
+    Z = load_pc(model_name, pc_id).T                                            # source 
+    M  = read_canonical_model(model_name).T                                     # target
 
-    # convert to (3,N)
-    Q = target.T
-    P = source.T
+    mse_best = np.inf
+    R_best = None
+    p_best = None
+    yaw_best = None
 
-    best = {"mse": np.inf, "R": None, "p": None, "yaw": None}
-
-    yaws = np.linspace(-np.pi, np.pi, yaw_steps, endpoint=False)
+    yaws = np.linspace(-np.pi, np.pi, yaw_steps, endpoint=False)                # 36 values between -pi and pi
 
     for yaw in yaws:
-        R_init = Rz(yaw)
-        p_init = np.zeros((3,1))
+        R_init = rotation_yaw(yaw)
+        Z_mean = Z.mean(axis=1, keepdims=True)
+        M_mean = M.mean(axis=1, keepdims=True)
+        p_init = M_mean - Z_mean
+        # print("z mean ", Z_mean)
+        # print("m mean ", M_mean)
+        # print("p init ", p_init)
 
-        R_icp, p_icp, mse = ICP(P, Q, R_init, p_init, iterations=iters, tolerance=tol)
+        R_icp, p_icp, mse_icp = ICP(Z, M, R_init, p_init, iterations, tolerance)
 
-        if mse < best["mse"]:
-            best.update({"mse": mse, "R": R_icp, "p": p_icp, "yaw": yaw})
+        if mse_icp < mse_best:
+          mse_best = mse_icp
+          R_best = R_icp
+          p_best = p_icp
+          yaw_best = yaw
 
-    T_best = make_T(best["R"], best["p"])
-    return source, target, T_best, best
+    pose_best = make_T3(R_best, p_best)
+    return Z.T, M.T, pose_best, mse_best, R_best, p_best, yaw_best
+
+
+
 
 
 #2B
-def ICP_dataset(dataset=20, scan_idx=100):
+
+def build_trajectory(R_list, p_list):
+    T = np.eye(3)
+    traj = [T.copy()]
+
+    for R, p in zip(R_list, p_list):
+        T = T @ make_T2(R, p)
+        traj.append(T.copy())
+    traj = np.array(traj)
+
+    return traj, traj[:,0,2], traj[:,1,2]
+
+def ICP_dataset(dataset=20):
+  # t_T_t+1​ = M_T_Z, source to target or Z to M
   encoder_data, lidar_data, imu_data, kinect_data = load_dataset(dataset)
   t_start, t_end, encoder_counts, encoder_t, v, imu_wz, imu_t, x, y, encoder_theta, d_x, d_y, d_theta = encoder_IMU_odometry(dataset)
+  
 
   lidar_ranges = lidar_data["lidar_ranges"]
   lidar_stamps = lidar_data["lidar_stamps"]
@@ -412,35 +428,123 @@ def ICP_dataset(dataset=20, scan_idx=100):
   p_list = []
   mse_list = []
 
+  T_total = np.eye(3)                                                            # initialize T pose
+  x_icp = [0.0]
+  y_icp = [0.0]
+
   for i in range(n_scans - 1):  
     t0 = lidar_stamps[i]                                                        # sync timestamps with encoder
     t1 = lidar_stamps[i+1]
     j0 = int(np.argmin(np.abs(encoder_t - t0)))
     j1 = int(np.argmin(np.abs(encoder_t - t1)))
 
-    dx = x[j1] - x[j0]                                            
-    dy = y[j1] - y[j0]
+    dx_w = x[j1] - x[j0]                                                        # world frame                                   
+    dy_w = y[j1] - y[j0]
     dtheta = encoder_theta[j1] - encoder_theta[j0]
 
-    # Build source and target point clouds
-    Q = lidar_scan_to_points(lidar_ranges[:, i], angles, range_min, range_max)
+    R_0 = rotation2d(encoder_theta[j0])                                         # robot orientation at t = 0
 
-    P = lidar_scan_to_points(lidar_ranges[:, i+1], angles, range_min, range_max) 
+    dp_local = R_0.T @ np.array([[dx_w], [dy_w]])                               # world to robot/body fram at t =0
+    dx_b = dp_local[0, 0]
+    dy_b = dp_local[1, 0]
+
+ 
+    
+    # Build source and target point clouds
+    # t_T_t+1​ = M_T_Z, source to target or Z to M, i+1 to i
+    Z = lidar_scan_to_points(lidar_ranges[:, i+1], angles, range_min, range_max)
+
+    M = lidar_scan_to_points(lidar_ranges[:, i], angles, range_min, range_max) 
 
     # R_init = rotation2d(d_theta[i])
-    R_init = rotation2d(dtheta[i])
+    R_init = rotation2d(dtheta)
 
     # p_init = np.array([[d_x[i]],[d_y[i]]])
-    p_init = np.array([[dx[i]],[dy[i]]])
+    p_init = np.array([[dx_b], [dy_b]])
 
-    R_icp, p_icp, mse_icp = ICP(P, Q, R_init, p_init)                            # run ICP
+    R_icp, p_icp, mse_icp = ICP(Z, M, R_init, p_init, iterations=1000, tolerance=1e-6)               # run ICP, t_T_t+1 = M_T_Z
+
+    # append list of R, p between scans
 
     R_list.append(R_icp)
     p_list.append(p_icp)
     mse_list.append(mse_icp)
 
+    T_rel = make_T2(R_icp, p_icp)
+    T_total = T_total @ T_rel
+    
+    x_icp.append(T_total[0, 2])
+    y_icp.append(T_total[1, 2])
 
-  return R_list, p_list, mse_list
+    if i % 200 == 0:
+      plot_icp_step(Z, M, R_icp, p_icp, i) #TEST
+      print(i, "MSE:", mse_icp) # TEST
+
+  traj, x_icp, y_icp = build_trajectory(R_list, p_list)
+  print("mean mse:", np.mean(mse_list), "max mse:", np.max(mse_list))
+  visualize_map(lidar_ranges, angles, traj, range_min, range_max)
+
+
+  return R_list, p_list, mse_list, x_icp, y_icp
+
+
+
+
+
+
+def plot_icp_step(Z, M, R, p, step):
+    plt.figure(figsize=(6,6))
+
+    # target scan (t+1)
+    plt.scatter(M[0], M[1], s=1, c='black', label="target")
+
+    # original source
+    plt.scatter(Z[0], Z[1], s=1, c='red', alpha=0.3, label="source")
+
+    # aligned source
+    Z_aligned = R @ Z + p
+    plt.scatter(Z_aligned[0], Z_aligned[1], s=1,
+                c='blue', label="aligned")
+
+    plt.axis('equal')
+    plt.grid(True)
+    plt.title(f"ICP alignment step {step}")
+    plt.legend()
+    plt.show()
+
+def plot_trajectory(x, y, x_icp, y_icp):
+  plt.figure()
+  plt.plot(x, y, label="Odometry", alpha=0.5)
+  plt.plot(x_icp, y_icp, label="ICP trajectory")
+  plt.axis('equal')
+  plt.grid(True)
+  plt.legend()
+  plt.title("Trajectory comparison")
+  plt.show()
+
+def visualize_map(lidar_ranges, angles, traj, range_min, range_max):
+  plt.figure(figsize=(7,7))
+
+  for i, T in enumerate(traj):
+
+      pts = lidar_scan_to_points(
+          lidar_ranges[:,i],
+          angles,
+          range_min,
+          range_max
+      )
+
+      R = T[:2,:2]
+      t = T[:2,2:3]
+
+      pts_w = R @ pts + t
+
+      plt.scatter(pts_w[0], pts_w[1], s=0.2, c='k')
+
+  plt.axis('equal')
+  plt.grid(True)
+  plt.title("ICP Map")
+  plt.show()
 
 
 if __name__ == '__main__':
