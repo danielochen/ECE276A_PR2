@@ -35,13 +35,14 @@ def load_pc(model_name, id):
   return pc
 
 
-def visualize_icp_result(source_pc, target_pc, pose):
+def visualize_icp_result(source_pc, target_pc, pose, model_name  = "drill", pc_id = 0, show = True, save = True):
   '''
   Visualize the result of ICP
   source_pc: numpy array, (N, 3)
   target_pc: numpy array, (N, 3)
   pose: SE(4) numpy array, (4, 4)
   '''
+
   source_pcd = o3d.geometry.PointCloud()
   source_pcd.points = o3d.utility.Vector3dVector(source_pc.reshape(-1, 3))
   source_pcd.paint_uniform_color([0, 0, 1])
@@ -52,6 +53,17 @@ def visualize_icp_result(source_pc, target_pc, pose):
 
   source_pcd.transform(pose)
 
-  o3d.visualization.draw_geometries([source_pcd, target_pcd])
+  if save:
+    o3d.io.write_point_cloud(f"{model_name}_{pc_id}_source.ply", source_pcd)
+    o3d.io.write_point_cloud(f"{model_name}_{pc_id}_target.ply", target_pcd)
+  
+  if show:
+    o3d.visualization.draw_geometries([source_pcd, target_pcd])
+    
+    
+
+
+  
+  
 
 

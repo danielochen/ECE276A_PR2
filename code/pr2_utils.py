@@ -1,4 +1,3 @@
-
 import numpy as np
 import matplotlib.pyplot as plt; plt.ion()
 import time
@@ -147,7 +146,7 @@ def test_map(dataset=20):
   lidar_stamps = lidar_data["lidar_stamps"]                                     # acquisition times of the lidar scans
 
   # need to transform the lidar measurements bsaed off the 
-  print(lidar_ranges.shape[0])
+  # print(lidar_ranges.shape[0])
   # Initialize a grid map
   MAP = {}
   MAP['res'] = np.array([0.05, 0.05])    # meters
@@ -159,7 +158,7 @@ def test_map(dataset=20):
   MAP['map'] = np.zeros(MAP['size'])
   
   # Load Lidar scan
-  print("lidar_ranges shape:", lidar_ranges.shape)
+  # print("lidar_ranges shape:", lidar_ranges.shape)
   n_rays, n_scans = lidar_ranges.shape
   # angles = np.arange(-135,135.25,0.25)*np.pi/180.0
   angles = (angle_min + np.arange(n_rays) * angle_increment).reshape(-1)
@@ -215,7 +214,6 @@ def test_map(dataset=20):
 
 
 
-
 def encoder_IMU_odometry(dataset = 20, d_tick = 0.0022, plot = False):
     encoder_data, lidar_data, imu_data, kinect_data = load_dataset(dataset)
     encoder_counts = encoder_data["encoder_counts"]
@@ -223,13 +221,13 @@ def encoder_IMU_odometry(dataset = 20, d_tick = 0.0022, plot = False):
     
     imu_angular_velocity = imu_data["imu_angular_velocity"] 
     imu_stamps = imu_data["imu_stamps"] # 100 Hz 
-    print("encoder stamps size", len(encoder_stamps)) 
-    print("imu stamps size", len(imu_stamps)) 
+    # print("encoder stamps size", len(encoder_stamps)) 
+    # print("imu stamps size", len(imu_stamps)) 
     
     # only use time range when both sensors are on 
     t_start = max(encoder_stamps[0], imu_stamps[0]) 
     t_end = min(encoder_stamps[-1], imu_stamps[-1]) 
-    print("\n\ntime range", t_start, "to ", t_end) 
+    # print("\n\ntime range", t_start, "to ", t_end) 
 
 
     imu_range = (imu_stamps >= t_start) & (imu_stamps <= t_end)
@@ -320,7 +318,7 @@ def Kabsch(Z, M):
   return R, p
 
 # ICP
-def ICP(Z, M, R_init, p_init, iterations = 1000, tolerance = 1e-6):
+def ICP(Z, M, R_init, p_init, iterations = 50, tolerance = 1e-6, d_max = 2.0):
   # t_T_t+1​ = M_T_Z, source to target or Z to M
   dim1, N_Z = Z.shape                                                           # source cloud
   dim2, N_M = M.shape                                                           # target cloud
@@ -336,14 +334,18 @@ def ICP(Z, M, R_init, p_init, iterations = 1000, tolerance = 1e-6):
 
     # nearest neighbours in 2 or 3D using KD tree
     d, i_kd = kdtree.query(Z_correspond.T)
-    M_correspond = M[:, i_kd]
+    valid_matches = d < d_max                                                   # filter out outliers that are too far apart, thanks Hesam
+    
+    Z_correspond = Z_correspond[:, valid_matches]
+    M_correspond = M[:, i_kd[valid_matches]]
+    
 
     d_R, d_p = Kabsch(Z_correspond, M_correspond)                               # iterate Kabsch step
 
     R = d_R @ R                                                                 # update transforms with R, p
     p = d_R @ p + d_p
 
-    mse = np.mean(d**2)
+    mse = np.mean(d[valid_matches]**2)                                          # MSE over valid matches
     if abs(mse_prev - mse) < tolerance:                                         # exit early if reached
         break
     mse_prev = mse
@@ -392,6 +394,7 @@ def warmup_icp(model_name, pc_id, yaw_steps=36, iterations=1000, tolerance=1e-6)
 #2B
 
 def build_trajectory(R_list, p_list):
+    # input R_list and p_list contain transformations i_T_i+1
     T = np.eye(3)
     traj = [T.copy()]
 
@@ -412,8 +415,8 @@ def ICP_dataset(dataset=20):
   lidar_stamps = lidar_data["lidar_stamps"]
   angle_min = lidar_data["lidar_angle_min"]
   angle_increment = lidar_data["lidar_angle_increment"]
-  range_min = lidar_data["lidar_range_min"]
-  range_max = lidar_data["lidar_range_max"]
+  range_min = max(lidar_data["lidar_range_min"], 0.1)                           # TA advice: filter out < 0.1m
+  range_max = min(lidar_data["lidar_range_max"], 30.0) # TA advice: filter out > 30.0m
 
   # need to transform the lidar measurements bsaed off the 
   print(lidar_ranges.shape[0])
@@ -431,6 +434,7 @@ def ICP_dataset(dataset=20):
   T_total = np.eye(3)                                                            # initialize T pose
   x_icp = [0.0]
   y_icp = [0.0]
+  theta_icp = [0.0]
 
   for i in range(n_scans - 1):  
     t0 = lidar_stamps[i]                                                        # sync timestamps with encoder
@@ -438,7 +442,7 @@ def ICP_dataset(dataset=20):
     j0 = int(np.argmin(np.abs(encoder_t - t0)))
     j1 = int(np.argmin(np.abs(encoder_t - t1)))
 
-    dx_w = x[j1] - x[j0]                                                        # world frame                                   
+    dx_w = x[j1] - x[j0]                                                        # world frame odometry from encoder                                  
     dy_w = y[j1] - y[j0]
     dtheta = encoder_theta[j1] - encoder_theta[j0]
 
@@ -475,17 +479,19 @@ def ICP_dataset(dataset=20):
     
     x_icp.append(T_total[0, 2])
     y_icp.append(T_total[1, 2])
+    theta_icp.append(np.arctan2(T_total[1, 0], T_total[0, 0]))
 
-    if i % 200 == 0:
-      plot_icp_step(Z, M, R_icp, p_icp, i) #TEST
-      print(i, "MSE:", mse_icp) # TEST
+    # if i % 200 == 0:
+    # plot_icp_step(Z, M, R_icp, p_icp, i) #TEST
+    #   print(i, "MSE:", mse_icp) # TEST
 
   traj, x_icp, y_icp = build_trajectory(R_list, p_list)
-  print("mean mse:", np.mean(mse_list), "max mse:", np.max(mse_list))
+  print("dataset: ", dataset, "mean mse: ", np.mean(mse_list), "max mse: ", np.max(mse_list))
   visualize_map(lidar_ranges, angles, traj, range_min, range_max)
 
+  x_icp, y_icp, theta_icp = np.array(x_icp), np.array(y_icp), np.array(theta_icp)
 
-  return R_list, p_list, mse_list, x_icp, y_icp
+  return R_list, p_list, mse_list, x_icp, y_icp, theta_icp
 
 
 
@@ -512,14 +518,14 @@ def plot_icp_step(Z, M, R, p, step):
     plt.legend()
     plt.show()
 
-def plot_trajectory(x, y, x_icp, y_icp):
+def plot_trajectory(x, y, x_icp, y_icp, dataset):
   plt.figure()
   plt.plot(x, y, label="Odometry", alpha=0.5)
   plt.plot(x_icp, y_icp, label="ICP trajectory")
   plt.axis('equal')
   plt.grid(True)
   plt.legend()
-  plt.title("Trajectory comparison")
+  plt.title(f"Trajectory comparison of dataset {dataset}")
   plt.show()
 
 def visualize_map(lidar_ranges, angles, traj, range_min, range_max):
