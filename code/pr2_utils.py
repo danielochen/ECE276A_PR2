@@ -124,8 +124,9 @@ def rotation_yaw(yaw):
 def make_T3(R, p):
   T = np.eye(4)
   T[:3, :3] = R
-  T[:3, 3] = p.reshape(3,)
+  T[:3, 3] = np.asarray(p).reshape(3,)
   return T
+
 
 def make_T2(R, p):
   T = np.eye(3)
