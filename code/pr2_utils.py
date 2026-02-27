@@ -4,6 +4,7 @@ import time
 from icp_warm_up.utils import read_canonical_model, load_pc, visualize_icp_result
 from scipy.spatial import cKDTree
 from load_data import load_dataset
+import os
 
 def tic():
   return time.time()
@@ -126,6 +127,8 @@ def make_T3(R, p):
   T[:3, :3] = R
   T[:3, 3] = np.asarray(p).reshape(3,)
   return T
+
+
 
 
 def make_T2(R, p):
@@ -273,14 +276,15 @@ def encoder_IMU_odometry(dataset = 20, d_tick = 0.0022, plot = False):
     x[1:] = np.cumsum(d_x) 
     y[1:] = np.cumsum(d_y)
 
-    plt.figure()
-    plt.plot(x, y)
-    plt.axis("equal")
-    plt.title(f"Odometry Trajectory (Encoder + IMU) of dataset {dataset}")
-    plt.xlabel("x (m)")
-    plt.ylabel("y (m)")
-    plt.grid(True)
-    plt.show()
+    if plot:
+      plt.figure()
+      plt.plot(x, y)
+      plt.axis("equal")
+      plt.title(f"Odometry Trajectory (Encoder + IMU) of dataset {dataset}")
+      plt.xlabel("x (m)")
+      plt.ylabel("y (m)")
+      plt.grid(True)
+      plt.show()
 
     return t_start, t_end, encoder_counts_sync, encoder_stamps_sync, v, imu_angular_velocity_yaw, imu_stamps_yaw, x, y, encoder_theta, d_x, d_y, d_theta
 
@@ -453,8 +457,6 @@ def ICP_dataset(dataset=20):
     dx_b = dp_local[0, 0]
     dy_b = dp_local[1, 0]
 
- 
-    
     # Build source and target point clouds
     # t_T_t+1​ = M_T_Z, source to target or Z to M, i+1 to i
     Z = lidar_scan_to_points(lidar_ranges[:, i+1], angles, range_min, range_max)
@@ -469,9 +471,7 @@ def ICP_dataset(dataset=20):
 
     R_icp, p_icp, mse_icp = ICP(Z, M, R_init, p_init, iterations=1000, tolerance=1e-6)               # run ICP, t_T_t+1 = M_T_Z
 
-    # append list of R, p between scans
-
-    R_list.append(R_icp)
+    R_list.append(R_icp)                                                        # append list of R, p between scans
     p_list.append(p_icp)
     mse_list.append(mse_icp)
 
@@ -489,14 +489,15 @@ def ICP_dataset(dataset=20):
   traj, x_icp, y_icp = build_trajectory(R_list, p_list)
   print("dataset: ", dataset, "mean mse: ", np.mean(mse_list), "max mse: ", np.max(mse_list))
   visualize_map(lidar_ranges, angles, traj, range_min, range_max)
+  if not os.path.exists('outputs'):
+    os.makedirs('outputs')
+  np.save(f'outputs/x_icp_{dataset}.npy', x_icp)
+  np.save(f'outputs/y_icp_{dataset}.npy', y_icp)
+  np.save(f'outputs/theta_icp_{dataset}.npy', theta_icp)
 
   x_icp, y_icp, theta_icp = np.array(x_icp), np.array(y_icp), np.array(theta_icp)
 
   return R_list, p_list, mse_list, x_icp, y_icp, theta_icp
-
-
-
-
 
 
 def plot_icp_step(Z, M, R, p, step):

@@ -2,6 +2,8 @@ import os
 import scipy.io as sio
 import numpy as np
 import open3d as o3d
+import matplotlib.pyplot as plt
+import matplotlib.image as mpimg
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(HERE, "data")
@@ -35,7 +37,7 @@ def load_pc(model_name, id):
   return pc
 
 
-def visualize_icp_result(source_pc, target_pc, pose, model_name  = "drill", pc_id = 0, show = True, save = True):
+def visualize_icp_result(source_pc, target_pc, pose, model_name  = "drill", pc_id = 0, show = False, save = True):
   '''
   Visualize the result of ICP
   source_pc: numpy array, (N, 3)
@@ -56,11 +58,28 @@ def visualize_icp_result(source_pc, target_pc, pose, model_name  = "drill", pc_i
   if save:
     o3d.io.write_point_cloud(f"{model_name}_{pc_id}_source.ply", source_pcd)
     o3d.io.write_point_cloud(f"{model_name}_{pc_id}_target.ply", target_pcd)
+
   
   if show:
     o3d.visualization.draw_geometries([source_pcd, target_pcd])
-    
-    
+
+
+def show_icp_warmup(model_name):
+    fig, axes = plt.subplots(2, 2, figsize=(10, 10))
+    axes = axes.flatten()
+    pc_id=(0, 1, 2, 3)
+    title = f"Point Clouds for {model_name}"
+    plt.suptitle(title)
+    for ax, id in zip(axes, pc_id):
+        fname = f"{model_name}_{id}.png"
+        path = os.path.join("../images", fname)
+        img = mpimg.imread(path)
+        ax.imshow(img)
+        ax.set_title(fname)
+        ax.axis("off")
+
+    plt.tight_layout()
+    plt.show()
 
 
   
