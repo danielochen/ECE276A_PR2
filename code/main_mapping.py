@@ -6,6 +6,7 @@ import load_data as L
 import pr2_utils as U
 from mapping_utils import disparity2pointcloud, update_occupancy_grid, camera2body, body_pose, get_lidar_points_in_body
 
+
 dir = "outputs"
 os.makedirs(dir, exist_ok=True)
 
