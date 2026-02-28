@@ -1,11 +1,12 @@
 import numpy as np
-import cv2
 import os
 import matplotlib.pyplot as plt
 import load_data as L
 import pr2_utils as U
+import subprocess
+import sys
 from mapping_utils import disparity2pointcloud, update_occupancy_grid, camera2body, body_pose, get_lidar_points_in_body
-
+from IPython.display import Image as IPyImage, display
 
 dir = "outputs"
 os.makedirs(dir, exist_ok=True)
@@ -46,30 +47,33 @@ def build_full_occupancy(occ_grid, lidar_ranges, angles, r_min, r_max, x_pose, y
 
     return occ_grid
 
-def build_texture_map_generic(texture_grid, size, map_min, res, kinect_data, t_pose, x_pose, y_pose, theta_pose, rgb_dir, disp_dir, rgb_files, disp_files, skip = 5):
+def show_map(path, width=700):
+    display(IPyImage(filename=path, width=width))
 
+def build_texture_map_generic(texture_grid, size, map_min, res, kinect_data, t_pose, x_pose, y_pose, theta_pose, rgb_dir, disp_dir, rgb_files, disp_files, skip = 5):
+    import cv2
     kinect_stamps = kinect_data["disp_stamps"]
     rgb_stamps = kinect_data["rgb_stamps"]
     num_frames = min(len(disp_files), len(kinect_stamps))
 
-    T_kb = camera2body()
+    T_kb = camera2body()                                                        # transformation from camera to body frame
 
     for i in range(0, num_frames, skip):
         ts = kinect_stamps[i]
 
-        xr, yr, tr = body_pose(ts, t_pose, x_pose, y_pose, theta_pose)
+        xr, yr, tr = body_pose(ts, t_pose, x_pose, y_pose, theta_pose)          # robot pose w interpolation
 
-        disp_img = cv2.imread(os.path.join(disp_dir, disp_files[i]), cv2.IMREAD_UNCHANGED)
-        rgb_idx = np.argmin(np.abs(rgb_stamps - ts))
+        disp_img = cv2.imread(os.path.join(disp_dir, disp_files[i]), cv2.IMREAD_UNCHANGED) # disparity image
+        rgb_idx = np.argmin(np.abs(rgb_stamps - ts))                            # closest rgb image timestamp
         rgb_img = cv2.imread(os.path.join(rgb_dir, rgb_files[rgb_idx]))
         rgb_img = cv2.cvtColor(rgb_img, cv2.COLOR_BGR2RGB)
 
-        points_c, colors = disparity2pointcloud(disp_img, rgb_img)
+        points_c, colors = disparity2pointcloud(disp_img, rgb_img)              # point cloud in camera with colors
 
         points_c_hom = np.hstack((points_c, np.ones((points_c.shape[0], 1))))
         points_b = (T_kb @ points_c_hom.T).T[:, :3]
 
-        R_wb = np.array([
+        R_wb = np.array([                                                       # rotation body to world
             [np.cos(tr), -np.sin(tr), 0],
             [np.sin(tr),  np.cos(tr), 0],
             [0,           0,          1]
@@ -100,29 +104,20 @@ def build_texture_map_generic(texture_grid, size, map_min, res, kinect_data, t_p
 def run_map_with_pose(dataset: int, t_pose, x_pose, y_pose, theta_pose, map_min, map_max, res=0.1, skip = 5):
     encoder_data, lidar_data, imu_data, kinect_data = L.load_dataset(dataset)
 
-    # map init
-    map_min = np.array(map_min, dtype=float)
+    map_min = np.array(map_min, dtype=float)                                    # map init
     map_max = np.array(map_max, dtype=float)
     size = np.ceil((map_max - map_min) / res).astype(int)
 
     occ_grid = np.zeros(size)
     texture_grid = np.zeros((size[0], size[1], 3), dtype=np.uint8)
 
-    # lidar params
-    lidar_ranges = lidar_data["lidar_ranges"]
-    angles = (
-        lidar_data["lidar_angle_min"]
-        + np.arange(lidar_ranges.shape[0]) * lidar_data["lidar_angle_increment"]
-    ).flatten()
+    lidar_ranges = lidar_data["lidar_ranges"]                                   # lidar params
+    angles = (lidar_data["lidar_angle_min"] + np.arange(lidar_ranges.shape[0]) * lidar_data["lidar_angle_increment"]).flatten() # angles for each lidar point
     r_min = lidar_data["lidar_range_min"]
     r_max = lidar_data["lidar_range_max"]
 
     # occupancy
-    occ_grid = build_full_occupancy(
-        occ_grid, lidar_ranges, angles, r_min, r_max,
-        x_pose, y_pose, theta_pose, res, map_min,
-        skip=skip
-    )
+    occ_grid = build_full_occupancy(occ_grid, lidar_ranges, angles, r_min, r_max, x_pose, y_pose, theta_pose, res, map_min, skip=skip)
 
     # kinect files
     rgb_dir = f"../data/dataRGBD/RGB{dataset}"
@@ -135,35 +130,44 @@ def run_map_with_pose(dataset: int, t_pose, x_pose, y_pose, theta_pose, map_min,
     return occ_grid, texture_grid, size, map_min, map_max, res, (x_pose, y_pose, theta_pose)
 
 
-def run_icp_map(dataset=20, res=0.05, skip = 5):
-    encoder_data, lidar_data, imu_data, kinect_data = L.load_dataset(dataset)
-    t_pose, x_pose, y_pose, theta_pose = pose_from_icp(dataset, lidar_data)
-    return run_map_with_pose(dataset, t_pose, x_pose, y_pose, theta_pose, map_min=(-30, -30), map_max=(30, 30), res=res, skip = skip)
+def run_icp_map(dataset=20, res=0.05, skip = 5):                                
+    encoder_data, lidar_data, imu_data, kinect_data = L.load_dataset(dataset)   # load data
+    t_pose, x_pose, y_pose, theta_pose = pose_from_icp(dataset, lidar_data)     # get pose from ICP
+    print(f"ICP map for dataset {dataset} done")
+
+    return run_map_with_pose(dataset, t_pose, x_pose, y_pose, theta_pose, map_min=(-30, -30), map_max=(30, 30), res=res, skip = skip)   # build map with ICP pose
 
 
 def run_odom_map(dataset=21, res=0.05, skip = 5):
-    encoder_data, lidar_data, imu_data, kinect_data = L.load_dataset(dataset)
+    encoder_data, lidar_data, imu_data, kinect_data = L.load_dataset(dataset)   # load data
+    t_pose, x_pose, y_pose, theta_pose = pose_from_odometry(dataset, lidar_data)# get pose from odometry
+    print(f"Odometry map for dataset {dataset} done")
 
-    t_pose, x_pose, y_pose, theta_pose = pose_from_odometry(dataset, lidar_data)
+    return run_map_with_pose(dataset,t_pose, x_pose, y_pose, theta_pose, map_min=(-40, -40), map_max=(40, 40), res=res, skip=skip)  # build map with odometry pose
 
-    return run_map_with_pose(dataset,t_pose, x_pose, y_pose, theta_pose, map_min=(-40, -40), map_max=(40, 40), res=res, skip=skip)
+def run_gtsam_map(dataset = 20, res=0.05, skip = 5):
+    r = subprocess.run([sys.executable, 'slam_gtsam.py', '--dataset', str(dataset)], cwd=os.getcwd(), capture_output=True, text=True)
+    print(f"GTSAM for dataset {dataset} done")
 
 
 def occ_to_img(occ_grid):
-    """Log-odds -> displayable grayscale image (occupied black, free white, unknown gray)."""
-    img = np.zeros_like(occ_grid, dtype=np.uint8)
-    img[occ_grid > 0] = 0
-    img[occ_grid < 0] = 255
-    img[occ_grid == 0] = 127
+    img = np.zeros_like(occ_grid, dtype=np.uint8)                               # occupied = black, free = white, unknown = gray
+    img[occ_grid > 0] = 0                                                       # occupied = black
+    img[occ_grid < 0] = 255                                                     # free = white                    
+    img[occ_grid == 0] = 127                                                    # unknown = gray 
     return img
 
-def plot_occupancy(occ_grid, map_min, map_max, x, y, ICP = True, dataset = 20):
+def plot_occupancy(occ_grid, map_min, map_max, x, y, ICP = True, dataset = 20, gtsam = False):
     if ICP:
         title = f"Occupancy Map from ICP Pose (Dataset {dataset})"
         filename = f"occupancy_icp_{dataset}.png"
     else:
         title = f"Occupancy Map from Odometry Pose (Dataset {dataset})"
         filename = f"occupancy_odom_{dataset}.png"
+    
+    if gtsam:
+        title = f"Occupancy Map from GTSAM Pose (Dataset {dataset})"
+        filename = f"occupancy_gtsam_{dataset}.png"
     
     
     img = occ_to_img(occ_grid)
@@ -178,13 +182,17 @@ def plot_occupancy(occ_grid, map_min, map_max, x, y, ICP = True, dataset = 20):
     print(f"Saved {os.path.join(dir, filename)}")
     plt.show()
 
-def plot_texture_overlay(occ_grid, texture_grid, map_min, map_max, x=None, y=None, ICP = True, dataset = 20):
+def plot_texture_overlay(occ_grid, texture_grid, map_min, map_max, x=None, y=None, ICP = True, dataset = 20, gtsam = False):
     if ICP:
         title = f"ICP Texture and Occupancy Map (Dataset {dataset})"
         filename = f"full_texture_icp_{dataset}.png"
     else:
         title = f"Odometry Texture and Occupancy Map (Dataset {dataset})"
         filename = f"full_texture_odom_{dataset}.png"
+    if gtsam:
+        title = f"GTSAM Texture and Occupancy Map (Dataset {dataset})"
+        filename = f"full_texture_gtsam_{dataset}.png"
+
 
     display = np.zeros((*occ_grid.shape, 3), dtype=np.uint8)                    # background from occupancy
     display[occ_grid < 0] = [200, 200, 200]                                     # free

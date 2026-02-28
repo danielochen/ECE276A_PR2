@@ -1,7 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt; plt.ion()
 import time
-from icp_warm_up.utils import read_canonical_model, load_pc, visualize_icp_result
+# from icp_warm_up.utils import read_canonical_model, load_pc, visualize_icp_result
 from scipy.spatial import cKDTree
 from load_data import load_dataset
 import os
@@ -150,7 +150,7 @@ def test_map(dataset=20):
   lidar_stamps = lidar_data["lidar_stamps"]                                     # acquisition times of the lidar scans
 
   # need to transform the lidar measurements bsaed off the 
-  # print(lidar_ranges.shape[0])
+  print(lidar_ranges.shape[0])
   # Initialize a grid map
   MAP = {}
   MAP['res'] = np.array([0.05, 0.05])    # meters
@@ -162,7 +162,7 @@ def test_map(dataset=20):
   MAP['map'] = np.zeros(MAP['size'])
   
   # Load Lidar scan
-  # print("lidar_ranges shape:", lidar_ranges.shape)
+  print("lidar_ranges shape:", lidar_ranges.shape)
   n_rays, n_scans = lidar_ranges.shape
   # angles = np.arange(-135,135.25,0.25)*np.pi/180.0
   angles = (angle_min + np.arange(n_rays) * angle_increment).reshape(-1)
@@ -360,10 +360,11 @@ def ICP(Z, M, R_init, p_init, iterations = 50, tolerance = 1e-6, d_max = 2.0):
 
 # 2A
 def warmup_icp(model_name, pc_id, yaw_steps=36, iterations=1000, tolerance=1e-6):
+    from icp_warm_up.utils import read_canonical_model, load_pc                 # only import for for warmup
     # t_T_t+1​ = M_T_Z, source to target or Z to M
     # target = canonical model, source = measured pc
     Z = load_pc(model_name, pc_id).T                                            # source 
-    M  = read_canonical_model(model_name).T                                     # target
+    M = read_canonical_model(model_name).T                                     # target
 
     mse_best = np.inf
     R_best = None
@@ -520,14 +521,23 @@ def plot_icp_step(Z, M, R, p, step):
     plt.legend()
     plt.show()
 
-def plot_trajectory(x, y, x_icp, y_icp, dataset):
+def plot_trajectory(x, y, x_icp, y_icp, dataset, x_gtsam=None, y_gtsam=None):
   plt.figure()
-  plt.plot(x, y, label="Odometry", alpha=0.5)
-  plt.plot(x_icp, y_icp, label="ICP trajectory")
+
+  plt.plot(x, y, label="Odometry", color='green')                               # plot odometry trajectory GREEN
+  plt.plot(x_icp, y_icp, label="ICP trajectory", color='blue')                  # plot ICP trajectory BLUE
+  if x_gtsam is not None and y_gtsam is not None:
+    plt.plot(x_gtsam, y_gtsam, label="GTSAM trajectory")                        # plot GTSAM trajectory RED
   plt.axis('equal')
   plt.grid(True)
   plt.legend()
   plt.title(f"Trajectory comparison of dataset {dataset}")
+  plt.xlabel("x (m)")
+  plt.ylabel("y (m)")
+
+  plt.savefig(f"outputs/trajectory_comparison_{dataset}.png", dpi=120, bbox_inches='tight')
+  print(f"Saved outputs/trajectory_comparison_{dataset}.png")
+
   plt.show()
 
 def visualize_map(lidar_ranges, angles, traj, range_min, range_max):
